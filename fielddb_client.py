@@ -89,14 +89,7 @@ class FieldDBClient(object):
     ############################################################################
 
     def get_greeting(self):
-        print
-        print self.get_url()
-        print
-        r = self.session.get(self.get_url())
-        try:
-            return r.json()
-        except:
-            return r.text
+        return self.session.get(self.get_url()).json()
 
     # Databases
     ############################################################################
@@ -333,7 +326,7 @@ if __name__ == '__main__':
     """Use this module as a command-line utility.
     Basic usage::
 
-        $ ./fielddb-client.py -R http -H 127.0.0.1 -P 5984 -u admin -p none
+        $ ./fielddb-client.py -R http -H 127.0.0.1 -P 5984 -u username -p password
 
     """
 
