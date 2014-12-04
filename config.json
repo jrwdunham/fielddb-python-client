@@ -1,0 +1,20 @@
+{
+    "auth_protocol": "https",
+    "auth_host": "localhost",
+    "auth_port": "3183",
+
+    "corpus_protocol": "http",
+    "corpus_host": "127.0.0.1",
+    "corpus_port": "9292",
+
+    "couch_protocol": "http",
+    "couch_host": "localhost",
+    "couch_port": "5984",
+
+    "username": "devlocal",
+    "password": "devlocal",
+
+    "admin_username": "admin",
+    "admin_password": "none"
+}
+

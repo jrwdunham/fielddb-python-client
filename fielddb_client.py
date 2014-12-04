@@ -25,7 +25,7 @@ and CouchDB APIs.
 
 import requests
 import pprint
-import simplejson
+import simplejson as json
 import uuid
 import copy
 import optparse
@@ -37,6 +37,11 @@ try:
 except ImportError:
     import httplib as http_client # Python 2
 
+
+# Stop the Certificate warnings with `verify=False`
+requests.packages.urllib3.disable_warnings()
+
+p = pprint.pprint
 
 def verbose():
     """Call this to spit the HTTP requests/responses to stdout.
@@ -61,54 +66,269 @@ class FieldDBClient(object):
 
     """
 
-    def __init__(self, protocol='https', host='localhost', port='3183',
-        username='', password=''):
-        self.protocol = protocol
-        self.host = host
-        self.port = port
-        self.username = username
-        self.password = password
+    def __init__(self, options):
+        """Options is a dict of options, or a string path to a JSON object/dict.
+
+        """
+
+        if type(options) is str:
+            options = json.load(open(options, 'rb'))
+        self._process_options(options)
         self.session = requests.Session()
-        self.session.verify = False
+        self.session.verify = False # https without certificates, wild!
         self.session.headers.update({'Content-Type': 'application/json'})
 
-    # General Methods
+    def _process_options(self, options):
+
+        self.auth_protocol = options.get('auth_protocol', 'https')
+        self.auth_host = options.get('auth_host', 'localhost')
+        self.auth_port = options.get('auth_port', '3183')
+
+        self.corpus_protocol = options.get('corpus_protocol', 'http')
+        self.corpus_host = options.get('corpus_host', '127.0.0.1')
+        self.corpus_port = options.get('corpus_port ', '9292')
+
+        self.couch_protocol = options.get('couch_protocol', 'http')
+        self.couch_host = options.get('couch_host', 'localhost')
+        self.couch_port = options.get('couch_port ', '5984')
+
+        self.username = options.get('username', 'someusername')
+        self.password = options.get('password', 'somesecret')
+
+        self.admin_username = options.get('admin_username', 'someusername')
+        self.admin_password = options.get('admin_password', 'somesecret')
+
+        self.server_code = options.get('server_code', 'local')
+        self.app_version_when_created = options.get('app_version_when_created',
+            'unknown')
+
+    # URL getters
     ############################################################################
 
-    def get_url(self):
-        return '%s://%s:%s' % (self.protocol, self.host, self.port)
+    def _get_url(self, protocol, host, port):
+        return '%s://%s:%s' % (protocol, host, port)
 
-    def get_url_auth(self):
-        return '%s://%s:%s@%s:%s' % (self.protocol, self.username,
-            self.password, self.host, self.port)
+    def _get_url_cred(self, protocol, host, port):
+        return '%s://%s:%s@%s:%s' % (protocol, self.username, self.password,
+            host, port)
+
+    def get_auth_url(self):
+        return self._get_url(self.auth_protocol, self.auth_host, self.auth_port)
+
+    def get_corpus_url(self):
+        return self._get_url(self.corpus_protocol, self.corpus_host,
+            self.corpus_port)
+
+    def get_couch_url(self):
+        return self._get_url(self.couch_protocol, self.couch_host,
+            self.couch_port)
+
+    def get_auth_url_cred(self):
+        return self._get_url_cred(self.auth_protocol, self.auth_host,
+            self.auth_port)
+
+    def get_corpus_url_cred(self):
+        return self._get_url_cred(self.corpus_protocol, self.corpus_host,
+            self.corpus_port)
+
+    # General methods
+    ############################################################################
 
     def get_uuid(self):
         return uuid.uuid4().hex
 
-    # General Couch Requests
+    # Authentication Web Service
     ############################################################################
+    #
+    # Here is the API (see AuthenticationWebService/service.js):
+    #
+    # POST /login (attempt a login)
+    # POST /register (create a new user)
+    # POST /newcorpus
+
+    # POST /changepassword
+    # POST /corpusteam (list of team members on a corpus)
+    # POST /addroletouser
+    # POST /updateroles
+
+    def login(self):
+        """Login to the FieldDB Authentication web service.
+
+        """
+        response = self.session.post(
+            '%s/login' % self.get_auth_url(),
+            data=json.dumps({
+                'username': self.username,
+                'password': self.password}))
+        rjson = response.json()
+        if rjson.has_key('user'):
+            self.user = rjson['user']
+            self.cookies = response.cookies
+        return rjson
+
+    def register(self, username, password, email):
+        """Register a new user via the FieldDB Authentication web service.
+
+        ..note::
+
+            It is not clear to me if the appVersionWhenCreated param is
+            important.
+
+        """
+
+        return self.session.post(
+            '%s/register' % self.get_auth_url(),
+            data=json.dumps({
+                'username': username,
+                'password': password,
+                'email': email,
+                'serverCode': self.server_code,
+                'authUrl': self.get_auth_url(),
+                'appVersionWhenCreated': self.app_version_when_created
+            })).json()
+
+    def new_corpus(self, new_corpus_name):
+        """Create a new FieldDB corpus via the FieldDB Authentication web
+        service.
+
+        POST /newcorpus with a JSON object payload.
+
+        If successful, `response['corpusadded'] is True`
+        If unsuccessful:
+        {u'corpusadded': True,
+         u'info': [u'User details saved.'],
+          u'userFriendlyErrors': [u'There was an error creating your corpus.
+          Blackfoot']}
+
+        """
+
+        return self.session.post(
+            '%s/newcorpus' % self.get_auth_url(),
+            data=json.dumps({
+                'newCorpusName': new_corpus_name,
+                'username': self.username,
+                'password': self.password,
+                'serverCode': self.server_code,
+                'authUrl': self.get_auth_url(),
+                'appVersionWhenCreated': self.app_version_when_created
+            })).json()
+
+
+    # Corpus Web Service
+    ############################################################################
+
+    # Direct CouchDB Requests
+    ############################################################################
+
+    def login_couchdb(self):
+        """Login via the CouchDB HTTP API using the admin user.
+
+        """
+
+        return self.session.post(
+            '%s/_session' % self.get_couch_url(),
+            data=json.dumps({
+                'name': self.admin_username,
+                'password': self.admin_password})).json()
 
     def get_greeting(self):
-        return self.session.get(self.get_url()).json()
-
-    # Databases
-    ############################################################################
+        return self.session.get(self.get_couch_url()).json()
 
     def get_database_list(self):
-        url = '%s/_all_dbs' % self.get_url()
+        url = '%s/_all_dbs' % self.get_couch_url()
         return self.session.get(url).json()
 
+    def get_users(self):
+        return self.get_all_docs_list('zfielddbuserscouch')
+
+    def get__users(self):
+        return self.get_all_docs_list('_users')
+
+    def get_usernames(self):
+        """Use the CouchDB API to get the usernames of the user documents in
+        zfielddbuserscouch.
+
+        """
+        return [u['doc']['username'] for u
+                in self.get_users()['rows']
+                if u['doc'].has_key('username')]
+
+    def get__usernames(self):
+        """Use the CouchDB API to get the usernames of the user documents in
+        _users.
+
+        .. note::
+
+            This assumes that the id is something like
+            'org.couchdb.user:username'.
+
+        """
+        return [u['doc']['_id'].split(':')[1] for u in
+                self.get__users()['rows']
+                if u['doc'].get('type') == 'user']
+
+    def delete_user_and_corpora(self, username):
+        """Use the CouchDB API to delete a FieldDB user.
+
+        ..warning::
+
+            This involves deleting the user's documents from both of the users
+            databases as well as deleting the users corpora and activity feed
+            databases. I do not know if it should involve the deletion of other
+            data as well.
+
+        ..warning::
+
+            This is just for testing. If you delete a database (=corpus) that
+            another user has access to and you don't alter that other user's
+            roles accordingly, the database will be in an inconsistent state.
+
+        """
+
+        _users_db = '_users'
+        users_db = 'zfielddbuserscouch'
+
+        dbs_to_delete = [db_name for db_name in self.get_database_list() if
+            db_name.startswith('%s-' % username)]
+        for db in dbs_to_delete:
+            delete_db_resp = self.delete_database(db)
+            if delete_db_resp.get('ok') is True:
+                print '... Deleted database "%s".' % db
+
+        user = self.get_document(users_db, username)
+        user_id = user.get('_id')
+        user_rev = user.get('_rev')
+
+        _user = self.get_document(_users_db, 'org.couchdb.user:%s' % username)
+        _user_id = _user.get('_id')
+        _user_rev = _user.get('_rev')
+
+        if user_id:
+            r = self.delete_document(users_db, user_id, user_rev)
+            if r.get('ok') is True:
+                print '... Deleted user "%s".' % user_id
+
+        if _user_id:
+            r = self.delete_document(_users_db, _user_id, _user_rev)
+            if r.get('ok') is True:
+                print '... Deleted user "%s".' % _user_id
+
     def create_database(self, database_name):
-        url = '%s/%s' % (self.get_url_auth(), database_name)
+        """Only CouchDB admins can create databases.
+
+        """
+
+        url = '%s/%s' % (self.get_couch_url(), database_name)
         return self.session.put(url).json()
 
     def delete_database(self, database_name):
-        url = '%s/%s' % (self.get_url_auth(), database_name)
+        #url = '%s/%s' % (self.get_couch_url_cred(), database_name)
+        url = '%s/%s' % (self.get_couch_url(), database_name)
         return self.session.delete(url).json()
 
     def replicate_database(self, source_name, target_name):
-        url = '%s/_replicate' % self.get_url_auth()
-        payload=simplejson.dumps({
+        url = '%s/_replicate' % self.get_couch_url()
+        payload=json.dumps({
             'source': source_name,
             'target': target_name,
             'create_target': True})
@@ -121,28 +341,33 @@ class FieldDBClient(object):
     ############################################################################
 
     def create_document(self, database_name, document):
-        document = simplejson.dumps(document)
-        url = '%s/%s' % (self.get_url_auth(), database_name)
+        document = json.dumps(document)
+        url = '%s/%s' % (self.get_couch_url(), database_name)
         return self.session.post(
             url,
             data=document,
             headers = {'content-type': 'application/json'}).json()
 
     def get_document(self, database_name, document_id):
-        url = '%s/%s/%s' % (self.get_url_auth(), database_name, document_id)
+        url = '%s/%s/%s' % (self.get_couch_url(), database_name, document_id)
         return self.session.get(url).json()
 
     def get_all_docs_list(self, database_name):
-        url = '%s/%s/_all_docs' % (self.get_url(), database_name)
+        url = '%s/%s/_all_docs' % (self.get_couch_url(), database_name)
         return self.session.get(url, params={'include_docs': 'true'}).json()
 
     def update_document(self, database_name, document_id, document_rev,
         new_document):
-        url = '%s/%s/%s' % (self.get_url_auth(), database_name, document_id)
+        url = '%s/%s/%s' % (self.get_couch_url(), database_name, document_id)
         new_document['_rev'] = document_rev
         return self.session.put(url,
-            data=simplejson.dumps(new_document),
+            data=json.dumps(new_document),
             headers = {'content-type': 'application/json'}).json()
+
+    def delete_document(self, database_name, document_id, document_rev):
+        url = '%s/%s/%s?rev=%s' % (self.get_couch_url(), database_name,
+            document_id, document_rev)
+        return self.session.delete(url).json()
 
 
 class FieldDBClientTester(object):
@@ -198,18 +423,68 @@ class FieldDBClientTester(object):
         database_list = self.fielddb.get_database_list()
         if self.database_name in database_list:
             self.fielddb.delete_database(self.database_name)
+            print '... Deleted database "%s".' % self.database_name
         if self.database_clone_name in database_list:
             self.fielddb.delete_database(self.database_clone_name)
+            print '... Deleted database "%s".' % self.database_clone_name
 
     def test(self):
-        """Run some tests be manipulating the couch and verifying that it
-        behaves as expected.  Just simple `assert` statements.
+        """Run some tests by making requests to the Auth service, the Corpus
+        service, and the CouchDB API and verifying that these behave as
+        expected. The tests are just simple `assert` statements.
 
         """
 
+        user_to_add_username = 'devlocal'
+        user_to_add_password = 'devlocal'
+        user_to_add_email = 'a@b.com'
+
+        temporary_user_username = 'temporary'
+        temporary_user_password = 'temporary'
+        temporary_user_email = 'tem@porary.com'
+
         print '\nTesting the FieldDB client.'
 
-        self.clean_up_couch() # Clean Up.
+        # Clean Up.
+        self.clean_up_couch()
+
+        # Login to the Authentication web service.
+        login_resp = self.fielddb.login()
+        assert login_resp.has_key('user')
+        assert login_resp['user']['username'] == self.fielddb.username
+        print '... Logged in to Authentication web service as "%s".' % \
+            self.fielddb.username
+
+        # Login to CouchDB with the admin account.
+        couchdb_login_resp = self.fielddb.login_couchdb()
+        assert couchdb_login_resp['ok'] is True
+        print '... Logged in to CouchDB as "%s".' % self.fielddb.admin_username
+
+        # Get users.
+        users_list = self.fielddb.get_usernames()
+        assert type(users_list) == type([])
+        print '... Got users list.'
+
+        # Create devlocal user if it doesn't exist.
+        if user_to_add_username not in users_list:
+            self.fielddb.register(user_to_add_username, user_to_add_password,
+                user_to_add_email)
+            print '... Registered user "%s".' % user_to_add_username
+        else:
+            print '... User "%s" is already registered.' % user_to_add_username
+
+        # Create temporary user.
+        register_request = self.fielddb.register(temporary_user_username,
+            temporary_user_password, temporary_user_email)
+        if register_request.get('userFriendlyErrors'):
+            print '... User "%s" is already registered.' % temporary_user_username
+        else:
+            print '... Registered user "%s".' % temporary_user_username
+
+        # Delete temporary user.
+        self.fielddb.delete_user_and_corpora(temporary_user_username)
+        print '... Deleted user "%s" and its corpora/databases.' % \
+            temporary_user_username
 
         # Get the CouchDB greeting.
         greeting = self.fielddb.get_greeting()
@@ -221,10 +496,21 @@ class FieldDBClientTester(object):
         assert type(database_list) is type([])
         print '... Got database list.'
 
-        # Create a database.
+        # Create a FieldDB corpus via the auth service
+        new_corpus_name = 'Blackfoot'
+        r = self.fielddb.new_corpus(new_corpus_name)
+        if r.get('userFriendlyErrors'):
+            print '... Corpus "%s" already exists.' % new_corpus_name
+        else:
+            print '... Corpus "%s" created.' % new_corpus_name
+
+        # Create a CouchDB database.
         if self.database_name not in database_list:
             create_response = self.fielddb.create_database(self.database_name)
-            assert create_response['ok'] is True
+            try:
+                assert create_response['ok'] is True
+            except:
+                pprint.pprint(create_response)
             print '... Created database "%s".' % self.database_name
         else:
             print '... Database "%s" already exists.' % self.database_name
@@ -295,7 +581,8 @@ class FieldDBClientTester(object):
                     "map": "function(doc){emit(doc._id, doc._rev)}"
                 },
                 "add_syntactic_category": {
-                    "map": open('map1.js', 'r').read()
+                    "map": open('views/add_syntactic_category/map.js',
+                        'r').read()
                 }
             }
         }
@@ -304,58 +591,76 @@ class FieldDBClientTester(object):
         assert dd_create_response['rev'][0] == u'1'
         print '... Created a design document.'
 
-        """
 
         print '\n' * 7
-        view = self.fielddb.get_document(self.database_name, '_design/example/_view/foo')
+        view = self.fielddb.get_document(self.database_name,
+            '_design/example/_view/foo')
         pprint.pprint(view)
 
         print '\n' * 7
-        view = self.fielddb.get_document('jrwdunham-firstcorpus', '_design/example/_view/add_syntactic_category')
-        pprint.pprint(view)
+        view = self.fielddb.get_document(self.database_name,
+            '_design/example/_view/add_syntactic_category')
 
-        """
+        pprint.pprint(view)
 
         # Clean Up.
         self.clean_up_couch()
         print
 
 
+def add_optparser_options(parser):
+    """Adds options to the optparser parser. Currently this is not being used.
+
+    """
+    parser.add_option("-c", "--config", default=None,
+        help="path to a JSON config file containing an object with attributes"
+            "for initializing a FieldDBClient")
+    parser.add_option("-R", "--protocol", default="https",
+        help="protocol: one of 'https' or 'http' [default: %default]")
+    parser.add_option("-H", "--host", default="localhost",
+        help="hostname where the FieldDB application can be accessed [default:"
+            "%default]")
+    parser.add_option("-P", "--port", default="3183",
+        help="port of the FieldDB application being used for the research"
+            "[default: %default]")
+    parser.add_option("-u", "--username", default="username",
+        help="username of the FieldDB researcher (on the FieldDB application)"
+            "[default: %default]")
+    parser.add_option("-p", "--password", default="password",
+        help="password of the FieldDB researcher (on the FieldDB application)"
+            "[default: %default]")
+
+
 if __name__ == '__main__':
 
-    """Use this module as a command-line utility.
-    Basic usage::
+    """Use this module as a command-line utility. Basic usage is::
 
-        $ ./fielddb-client.py -R http -H 127.0.0.1 -P 5984 -u username -p password
+        $ ./fielddb-client.py config.json
+
+    where `config.json is a JSON config file containing an object with the
+    following attributes, the values of which are all strings::
+
+        auth_protocol
+        auth_host
+        auth_port
+        corpus_protocol
+        corpus_host
+        corpus_port
+        couch_protocol
+        couch_host
+        couch_port
+        username
+        password
+        admin_username
+        admin_password
 
     """
 
     parser = optparse.OptionParser()
-
-    parser.add_option("-R", "--protocol", default="https",
-        help="protocol: one of 'https' or 'http' [default: %default]")
-    parser.add_option("-H", "--host", default="localhost",
-        help="hostname where the FieldDB application can be accessed [default: %default]")
-    parser.add_option("-P", "--port", default="3183",
-        help="port of the FieldDB application being used for the research [default: %default]")
-    parser.add_option("-u", "--username", default="username",
-        help="username of the FieldDB researcher (on the FieldDB application) [default: %default]")
-    parser.add_option("-p", "--password", default="password",
-        help="password of the FieldDB researcher (on the FieldDB application) [default: %default]")
-
     (options, args) = parser.parse_args()
+    config_path = args[0] # required first argument
 
-    # Currently the utility just creates a FieldDB client based on the input
-    # parameters and then runs the simple "test suite" (`test` method) of the
-    # `FieldDBClientTester`.
-
-    fielddb_client = FieldDBClient(
-        options.protocol,
-        options.host,
-        options.port,
-        options.username,
-        options.password
-    )
+    fielddb_client = FieldDBClient(config_path)
 
     tester = FieldDBClientTester(fielddb_client)
     tester.test()
