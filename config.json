@@ -15,6 +15,9 @@
     "password": "devlocal",
 
     "admin_username": "admin",
-    "admin_password": "none"
+    "admin_password": "none",
+
+    "server_code": "local",
+    "app_version_when_created": "unknown"
 }
 

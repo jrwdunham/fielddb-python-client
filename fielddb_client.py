@@ -574,6 +574,7 @@ class FieldDBClientTester(object):
         # Design Documents
         ########################################################################
 
+        # Create a design document.
         data = {
             "_id": "_design/example",
             "views": {
@@ -586,50 +587,39 @@ class FieldDBClientTester(object):
                 }
             }
         }
-        dd_create_response = self.fielddb.create_document(self.database_name, data)
+        dd_create_response = self.fielddb.create_document(self.database_name,
+                data)
         assert dd_create_response['id'] == u'_design/example'
         assert dd_create_response['rev'][0] == u'1'
         print '... Created a design document.'
 
-
-        print '\n' * 7
+        # Get the first design document.
         view = self.fielddb.get_document(self.database_name,
             '_design/example/_view/foo')
-        pprint.pprint(view)
+        assert view.has_key('rows')
+        print '... Got design document "foo".'
 
-        print '\n' * 7
+        # Get the second design document.
         view = self.fielddb.get_document(self.database_name,
             '_design/example/_view/add_syntactic_category')
-
-        pprint.pprint(view)
+        assert view.has_key('rows')
+        print '... Got design document "add_syntactic_category".'
 
         # Clean Up.
         self.clean_up_couch()
+
+        print 'Testing complete.'
         print
 
 
 def add_optparser_options(parser):
-    """Adds options to the optparser parser. Currently this is not being used.
+    """Adds options to the optparser parser.
 
     """
-    parser.add_option("-c", "--config", default=None,
-        help="path to a JSON config file containing an object with attributes"
-            "for initializing a FieldDBClient")
-    parser.add_option("-R", "--protocol", default="https",
-        help="protocol: one of 'https' or 'http' [default: %default]")
-    parser.add_option("-H", "--host", default="localhost",
-        help="hostname where the FieldDB application can be accessed [default:"
-            "%default]")
-    parser.add_option("-P", "--port", default="3183",
-        help="port of the FieldDB application being used for the research"
-            "[default: %default]")
-    parser.add_option("-u", "--username", default="username",
-        help="username of the FieldDB researcher (on the FieldDB application)"
-            "[default: %default]")
-    parser.add_option("-p", "--password", default="password",
-        help="password of the FieldDB researcher (on the FieldDB application)"
-            "[default: %default]")
 
+    parser.add_option("-d", "--delete", default=None, metavar="USERNAME",
+        help="username of a FieldDB user to be deleted along with all of their "
+            "databases")
 
 if __name__ == '__main__':
 
@@ -657,11 +647,19 @@ if __name__ == '__main__':
     """
 
     parser = optparse.OptionParser()
+    add_optparser_options(parser)
     (options, args) = parser.parse_args()
     config_path = args[0] # required first argument
 
     fielddb_client = FieldDBClient(config_path)
 
-    tester = FieldDBClientTester(fielddb_client)
-    tester.test()
+    if getattr(options, 'delete', False):
+        print 'Deleting user %s and all of their database.' % options.delete
+        fielddb_client.login()
+        fielddb_client.login_couchdb()
+        fielddb_client.delete_user_and_corpora(options.delete)
+    else:
+        # Default behaviour is to run some tests.
+        tester = FieldDBClientTester(fielddb_client)
+        tester.test()
 
